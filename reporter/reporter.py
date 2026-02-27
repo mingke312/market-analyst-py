@@ -63,13 +63,19 @@ class Reporter:
         # 1.1 涨跌幅排行
         lines.append("### 1.1 涨跌幅排行")
         lines.append("")
-        lines.append("| 指数 | 涨跌幅 |")
-        lines.append("|------|--------|")
+        lines.append("| 指数 | 涨跌幅 | 成交金额(亿) |")
+        lines.append("|------|--------|-------------|")
         
         changes = market.get('changes', {}).get('daily', [])
         for item in changes:
             change = f"{item['change_percent']:+.2f}%"
-            lines.append(f"| {item['name']} | {change} |")
+            # 成交金额单位转换：元→亿
+            amount = item.get('amount', 0)
+            if amount and amount > 0:
+                amount_str = f"{amount / 1e8:.1f}"
+            else:
+                amount_str = "-"
+            lines.append(f"| {item['name']} | {change} | {amount_str} |")
         
         lines.append("")
         
@@ -227,7 +233,13 @@ class Reporter:
         changes = analysis.get('market', {}).get('changes', {}).get('daily', [])
         for item in changes[:5]:
             change = f"{item['change_percent']:+.2f}%"
-            lines.append(f"{item['name']}: {item['price']:.2f} ({change})")
+            # 成交金额
+            amount = item.get('amount', 0)
+            if amount and amount > 0:
+                amount_str = f" 成交{amount/1e8:.0f}亿"
+            else:
+                amount_str = ""
+            lines.append(f"{item['name']}: {item['price']:.2f} ({change}){amount_str}")
         
         lines.append("")
         
