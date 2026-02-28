@@ -142,14 +142,63 @@ class MacroEconomyData:
         },
         
         # ============ 房地产 ============
+        # 国家统计局数据
         'real_estate': {
-            'name': '房地产销售',
-            'investment_yoy': -10.4,
-            'sales_yoy': -15.3,
-            'sales_area_yoy': -17.3,
-            'month': '2024',
+            'name': '房地产核心指标',
+            'investment_yoy': -13.9,  # 2025年1-9月
+            'investment_residential_yoy': -12.9,
+            'new_start_yoy': -18.9,
+            'new_start_residential_yoy': -18.3,
+            'completion_yoy': -15.3,
+            'completion_residential_yoy': -17.1,
+            'sales_area_yoy': -5.5,
+            'sales_area_residential_yoy': -5.6,
+            'sales_amount_yoy': -7.9,
+            'sales_amount_residential_yoy': -7.6,
+            'inventory': 75928,  # 万平方米
+            'month': '2025-09',
             'source': '国家统计局',
-            'note': '2024年全年数据'
+        },
+        
+        # 中指院数据
+        'real_estate_zhongzhi': {
+            'name': '中指院房价数据',
+            'new_home_100city': {
+                'name': '百城新建商品住宅价格',
+                'mom': 0.09,  # 2025年8月
+                'yoy': 2.68,
+            },
+            'second_hand_home': {
+                'name': '二手房价格',
+                'mom': -0.74,
+                'yoy': -7.38,
+            },
+            'rental_50city': {
+                'name': '50城租赁均价',
+                'residential_mom': -0.39,
+                'residential_yoy': -3.76,
+            },
+            'top100_sales': {
+                'name': 'Top100房企销售',
+                'value_1_9': 26065.9,  # 亿元
+                'yoy': -12.2,
+                'sep_yoy': 11.9,
+                'month': '2025-09',
+            },
+            'tier_city_new_home': {
+                'name': '一二三线城市新建住宅价格环比',
+                'tier1': -0.3,
+                'tier2': -0.4,
+                'tier3': -0.4,
+            },
+            'tier_city_second_hand': {
+                'name': '一二三线城市二手住宅价格环比',
+                'tier1': -1.0,
+                'tier2': -0.7,
+                'tier3': -0.6,
+            },
+            'source': '中指院',
+            'month': '2025-08/09',
         },
         
         # ============ 央行政策 ============
