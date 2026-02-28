@@ -248,6 +248,23 @@ class MacroEconomyData:
         }
     }
     
+    def save_to_file(self, filepath: str = None) -> str:
+        """保存数据到JSON文件"""
+        import os
+        
+        if filepath is None:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            data_dir = os.path.join(os.path.dirname(__file__), 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            filepath = os.path.join(data_dir, f"macro_{date_str}.json")
+        
+        result = self.get_all()
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        
+        return filepath
+    
     def get_all(self) -> Dict:
         """获取所有宏观经济数据"""
         
@@ -364,10 +381,15 @@ class MacroEconomyData:
 
 def main():
     import sys
+    import os
     
     data = MacroEconomyData()
     
-    if len(sys.argv) > 1 and sys.argv[1] == '--json':
+    if '--save' in sys.argv:
+        # 保存到文件
+        filepath = data.save_to_file()
+        print(f"✅ 数据已保存到: {filepath}")
+    elif len(sys.argv) > 1 and sys.argv[1] == '--json':
         result = data.get_all()
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
