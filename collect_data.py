@@ -203,8 +203,8 @@ def collect_macro_data(start_date: str, end_date: str) -> Dict:
 
 def collect_fund_flow_data(start_date: str, end_date: str) -> Dict:
     """采集资金流向数据"""
+    import sqlite3
     from collectors.fund_flow_collector import FundFlowCollector
-    from database.db_writer import DBWriter
     
     config = load_config()
     if not config.get('tushare_token'):
@@ -215,12 +215,124 @@ def collect_fund_flow_data(start_date: str, end_date: str) -> Dict:
         collector = FundFlowCollector(config)
         result = collector.run(start_date=start_date, end_date=end_date)
         
-        if result:
-            db = DBWriter()
-            logger.info(f"✓ Fund flow data collected")
-            return {'status': 'ok'}
+        if not result:
+            return {'status': 'warning', 'message': 'No data collected'}
         
-        return {'status': 'ok'}
+        # 保存到数据库
+        db_path = os.path.join(project_root, 'data', 'market_data.db')
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        data = result.get('data', {})
+        total_inserted = 0
+        
+        # 1. 融资融券汇总
+        if 'margin_summary' in data:
+            for row in data['margin_summary']:
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO margin_summary 
+                        (trade_date, exchange_id, rzye, rzmre, rzche, rqye, rqmcl, rzrqye, rqyl)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row.get('trade_date'), row.get('exchange_id'),
+                        row.get('rzye'), row.get('rzmre'), row.get('rzche'),
+                        row.get('rqye'), row.get('rqmcl'), row.get('rzrqye'), row.get('rqyl')
+                    ))
+                    total_inserted += 1
+                except Exception as e:
+                    logger.debug(f"Margin insert error: {e}")
+        
+        # 2. 沪深港通
+        if 'north_south' in data:
+            for row in data['north_south']:
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO hk_hsgt 
+                        (trade_date, ggt_ss, ggt_sz, hgt, sgt, north_money, south_money)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row.get('trade_date'), row.get('ggt_ss'), row.get('ggt_sz'),
+                        row.get('hgt'), row.get('sgt'), row.get('north_money'), row.get('south_money')
+                    ))
+                    total_inserted += 1
+                except Exception as e:
+                    logger.debug(f"HSGT insert error: {e}")
+        
+        # 3. 龙虎榜机构
+        if 'top_institution' in data:
+            for row in data['top_institution']:
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO top_institution 
+                        (trade_date, ts_code, exalter, buy, buy_rate, sell, sell_rate, net_buy, side, reason)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row.get('trade_date'), row.get('ts_code'), row.get('exalter'),
+                        row.get('buy'), row.get('buy_rate'), row.get('sell'),
+                        row.get('sell_rate'), row.get('net_buy'), row.get('side'), row.get('reason')
+                    ))
+                    total_inserted += 1
+                except Exception as e:
+                    logger.debug(f"Top institution insert error: {e}")
+        
+        # 4. 新增股东
+        if 'new_shareholders' in data:
+            for row in data['new_shareholders']:
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO new_shareholders 
+                        (ts_code, ann_date, end_date, holder_num)
+                        VALUES (?, ?, ?, ?)
+                    ''', (
+                        row.get('ts_code'), row.get('ann_date'), 
+                        row.get('end_date'), row.get('holder_num')
+                    ))
+                    total_inserted += 1
+                except Exception as e:
+                    logger.debug(f"New shareholders insert error: {e}")
+        
+        # 5. IPO数据
+        if 'ipo' in data:
+            for row in data['ipo']:
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO ipo_data 
+                        (ts_code, sub_code, name, ipo_date, issue_date, amount, market_amount, price, pe)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row.get('ts_code'), row.get('sub_code'), row.get('name'),
+                        row.get('ipo_date'), row.get('issue_date'), row.get('amount'),
+                        row.get('market_amount'), row.get('price'), row.get('pe')
+                    ))
+                    total_inserted += 1
+                except Exception as e:
+                    logger.debug(f"IPO insert error: {e}")
+        
+        # 6. 股东增减持
+        if 'holder_trade' in data:
+            for row in data['holder_trade']:
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO holder_trade 
+                        (ts_code, ann_date, holder_name, holder_type, in_de, change_vol, change_ratio, after_share, after_ratio, avg_price, total_share)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row.get('ts_code'), row.get('ann_date'), row.get('holder_name'),
+                        row.get('holder_type'), row.get('in_de'), row.get('change_vol'),
+                        row.get('change_ratio'), row.get('after_share'), row.get('after_ratio'),
+                        row.get('avg_price'), row.get('total_share')
+                    ))
+                    total_inserted += 1
+                except Exception as e:
+                    logger.debug(f"Holder trade insert error: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✓ Fund flow data: {total_inserted} records written to DB")
+        return {'status': 'ok', 'inserted': total_inserted}
+        
     except Exception as e:
         logger.error(f"✗ Fund flow collection failed: {e}")
         return {'status': 'error', 'message': str(e)}
