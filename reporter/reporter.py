@@ -37,7 +37,7 @@ class Reporter:
         lines.append("")
         
         # 一、行情分析
-        lines.extend(self._generate_market_section(analysis.get('market', {})))
+        lines.extend(self._generate_market_section(analysis.get('market', {}), analysis.get('basis', [])))
         
         # 二、新闻分析
         lines.extend(self._generate_news_section(analysis.get('news', {})))
@@ -53,8 +53,11 @@ class Reporter:
         
         return "\n".join(lines)
     
-    def _generate_market_section(self, market: Dict) -> List[str]:
+    def _generate_market_section(self, market: Dict, basis: List[Dict] = None) -> List[str]:
         """生成行情分析部分"""
+        if basis is None:
+            basis = []
+        
         lines = []
         
         lines.append("## 一、行情分析")
@@ -63,35 +66,91 @@ class Reporter:
         # 1.1 涨跌幅排行
         lines.append("### 1.1 涨跌幅排行")
         lines.append("")
-        lines.append("| 指数 | 涨跌幅 | 成交金额(亿) |")
-        lines.append("|------|--------|-------------|")
+        lines.append("| 指数 | 收盘价 | 涨跌幅 | 成交额(亿) |")
+        lines.append("|:-----|-------:|-------:|----------:|")
         
         changes = market.get('changes', {}).get('daily', [])
         for item in changes:
-            change = f"{item['change_percent']:+.2f}%"
-            # 成交金额单位转换：元→亿
+            change = item.get('change_percent', 0)
+            change_str = f"**{change:+.2f}%**" if change > 0 else f"{change:+.2f}%"
+            # TuShare的amount单位是千元，转换为亿：除以100000
             amount = item.get('amount', 0)
             if amount and amount > 0:
-                amount_str = f"{amount / 1e8:.1f}"
+                amount_str = f"{amount / 1e5:.1f}"
             else:
                 amount_str = "-"
-            lines.append(f"| {item['name']} | {change} | {amount_str} |")
+            # 收盘价
+            close = item.get('close', 0)
+            if close:
+                close_str = f"{close:.2f}"
+            else:
+                close_str = "-"
+            lines.append(f"| {item['name']} | {close_str} | {change_str} | {amount_str} |")
         
         lines.append("")
         
-        # 1.2 成交量
-        lines.append("### 1.2 成交量")
+        # 1.2 成交量分析
+        lines.append("### 1.2 成交量分析")
         lines.append("")
         
-        volume = market.get('volume', {})
-        lines.append(f"- 趋势: {volume.get('trend', '数据不足')}")
-        lines.append(f"- 解读: {volume.get('interpretation', '需要更多历史数据')}")
+        # 获取历史成交量数据
+        volume_history = market.get('volume_history', {})
+        volume_data = market.get('changes', {}).get('daily', [])
+        
+        if volume_history and volume_history.get('daily_amounts'):
+            # 使用历史数据计算平均
+            historical_amounts = volume_history.get('daily_amounts', [])
+            avg_amount = sum(historical_amounts) / len(historical_amounts) if historical_amounts else 0
+            days_count = len(historical_amounts)
+            
+            # 今日成交额
+            sse_amount = next((item.get('amount', 0) for item in volume_data if '上证' in item.get('name', '')), 0)
+            sz_amount = next((item.get('amount', 0) for item in volume_data if '深证' in item.get('name', '')), 0)
+            total_amount = sse_amount + sz_amount
+            
+            # 找出最大和最小成交额（从历史数据）
+            max_vol = ('深证成指', max(historical_amounts)) if historical_amounts else ('', 0)
+            min_vol = ('科创50', min(historical_amounts)) if historical_amounts else ('', 0)
+            
+            # 判断趋势
+            if len(historical_amounts) >= 2:
+                latest = historical_amounts[0] if historical_amounts else 0
+                prev = historical_amounts[1] if len(historical_amounts) > 1 else 0
+                if latest > prev * 1.1:
+                    trend = "放量上涨 📈"
+                    interpretation = f"较昨日放量{((latest/prev)-1)*100:.1f}%，市场活跃度提升"
+                elif latest < prev * 0.9:
+                    trend = "缩量下跌 📉"
+                    interpretation = f"较昨日缩量{((1-latest/prev)*100):.1f}%，市场情绪谨慎"
+                elif latest > avg_amount:
+                    trend = "高于平均 📊"
+                    interpretation = f"成交额高于近{days_count}日平均，市场交投活跃"
+                else:
+                    trend = "低于平均 📊"
+                    interpretation = f"成交额低于近{days_count}日平均，市场观望情绪浓厚"
+            else:
+                trend = "数据不足"
+                interpretation = "需要更多历史数据进行趋势判断"
+            
+            lines.append(f"**今日总成交额(沪市+深市)**: {total_amount/1e5:.1f}亿元")
+            lines.append("")
+            lines.append(f"| 指标 | 数值 |")
+            lines.append("|:-----|------:|")
+            lines.append(f"| 成交额 | {total_amount/1e5:.1f}亿 |")
+            lines.append(f"| 日均成交额(近{days_count}日) | {avg_amount:.1f}亿 |")
+            lines.append(f"| 最高成交额 | {max_vol[0]}: {max_vol[1]:.1f}亿 |")
+            lines.append(f"| 最低成交额 | {min_vol[0]}: {min_vol[1]:.1f}亿 |")
+            lines.append("")
+            lines.append(f"**趋势判断**: {trend}")
+            lines.append(f"**解读**: {interpretation}")
+        else:
+            lines.append("- 暂无成交量数据")
         
         lines.append("")
         
         # 1.3 基差分析
-        # 这里需要从analysis中获取basis数据
-        # 暂时省略，在主流程中会单独处理
+        if basis:
+            lines.extend(self.generate_basis_section(basis))
         
         return lines
     
@@ -110,8 +169,9 @@ class Reporter:
         for item in basis:
             arrow = "↓" if item['basis'] < 0 else "↑"
             ann = f"{arrow}{abs(item['annualized_basis']):.2f}%"
+            index_name = item.get('index_name') or item.get('index', '')
             lines.append(
-                f"| {item['index_name']} | {item['contract']} | "
+                f"| {index_name} | {item['contract']} | "
                 f"{item['futures_price']:.2f} | {item['spot_price']:.2f} | "
                 f"{arrow}{abs(item['basis']):.2f} | {ann} |"
             )
@@ -145,18 +205,31 @@ class Reporter:
         
         lines.append("")
         
-        # 2.2 重要新闻
-        lines.append("### 2.2 重要新闻")
+        # 2.2 今日新闻标题
+        lines.append("### 2.2 今日新闻标题")
         lines.append("")
         
-        high_news = news.get('high_importance', [])
-        if high_news:
-            for i, item in enumerate(high_news, 1):
-                lines.append(f"**{i}. {item['title']}**")
-                lines.append(f"- 分类: {item.get('category', '其他')}")
+        # 获取原始新闻数据
+        all_news = news.get('all_news', [])
+        if all_news:
+            # 显示最新10条
+            for i, item in enumerate(all_news[:10], 1):
+                title = item.get('title', '')[:50]  # 截断过长标题
+                source = item.get('source', '')
+                lines.append(f"{i}. **{title}**")
+                if source:
+                    lines.append(f"   - 来源: {source}")
                 lines.append("")
         else:
-            lines.append("*暂无高重要性新闻*")
+            # 如果没有原始数据，显示高重要性新闻
+            high_news = news.get('high_importance', [])
+            if high_news:
+                for i, item in enumerate(high_news[:10], 1):
+                    lines.append(f"**{i}. {item.get('title', '')}**")
+                    lines.append(f"   - 分类: {item.get('category', '其他')}")
+                    lines.append("")
+            else:
+                lines.append("*暂无重要新闻*")
         
         lines.append("")
         

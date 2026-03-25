@@ -1,268 +1,201 @@
 #!/usr/bin/env python3
 """
-A股市场每日分析系统 - 主程序
+宏观策略分析师系统 - 主程序
 """
-
+import os
 import sys
-import argparse
+import json
 import logging
 from datetime import datetime
-from typing import Optional
 
-from market_collector.collector import MarketCollector
-from futures_collector.collector import FuturesCollector
-from news_collector.collector import NewsCollector
-from analyzer.analyzer import Analyzer
-from reporter.reporter import Reporter
-from storage.storage import Storage
-from utils.data_quality import generate_quality_report
+# 添加项目根目录到路径
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
 
-# 配置日志
+from collectors.macro_collector import (
+    MacroCollector,
+    StockCollector, 
+    FuturesCollector,
+    GlobalMarketCollector,
+    FundFlowCollector,
+    FundCollector,
+    BondCollector,
+)
+from collectors.tushare_macro_collector import MoneySupplyCollector, SocialFinancingProCollector
+from database.db_writer import DBWriter
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
 
 
-class AShareAnalyzer:
-    """A股分析系统主类"""
-    
-    def __init__(self):
-        self.storage = Storage()
-        self.market_collector = MarketCollector()
-        self.futures_collector = FuturesCollector()
-        self.news_collector = NewsCollector()
-        self.analyzer = Analyzer(self.storage)
-        self.reporter = Reporter()
-    
-    def collect_data(self, date: str = None) -> dict:
-        """
-        收集所有数据
-        
-        Args:
-            date: 日期
-        
-        Returns:
-            收集结果
-        """
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        logger.info(f"开始收集数据 for {date}")
-        
-        results = {
-            'date': date,
-            'market': None,
-            'futures': None,
-            'news': None
-        }
-        
-        # 1. 收集行情数据
-        logger.info("收集行情数据...")
+def load_local_config():
+    """从本地配置文件加载敏感配置"""
+    config_path = os.path.join(project_root, 'config', 'local_config.json')
+    if os.path.exists(config_path):
         try:
-            market_data = self.market_collector.collect_all()
-            self.storage.save_market(market_data['data'], date)
-            results['market'] = market_data
-            logger.info(f"行情数据: {market_data.get('count', 0)}个指数")
-        except Exception as e:
-            logger.error(f"行情数据收集失败: {e}")
-        
-        # 2. 收集期货数据
-        logger.info("收集期货数据...")
-        try:
-            futures_data = self.futures_collector.collect_all()
-            self.storage.save_futures(futures_data['data'], date)
-            results['futures'] = futures_data
-            logger.info("期货数据收集完成")
-        except Exception as e:
-            logger.error(f"期货数据收集失败: {e}")
-        
-        # 3. 收集新闻数据
-        logger.info("收集新闻数据...")
-        try:
-            news_data = self.news_collector.collect_all()
-            self.storage.save_news(news_data['data'], date)
-            results['news'] = news_data
-            logger.info(f"新闻数据: {news_data.get('count', 0)}条")
-        except Exception as e:
-            logger.error(f"新闻数据收集失败: {e}")
-        
-        return results
-    
-    def check_quality(self, date: str = None) -> dict:
-        """
-        检查数据质量
-        
-        Args:
-            date: 日期
-        
-        Returns:
-            质量检查结果
-        """
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        logger.info("检查数据质量...")
-        
-        market_data = self.storage.load_market(date)
-        futures_data = self.storage.load_futures(date)
-        news_data = self.storage.load_news(date)
-        
-        result = generate_quality_report(market_data, futures_data, news_data)
-        
-        logger.info(f"质量评分: {result.score}/100, 通过: {result.passed}")
-        
-        return {
-            'score': result.score,
-            'passed': result.passed,
-            'report': result.report
-        }
-    
-    def analyze(self, date: str = None) -> dict:
-        """
-        执行分析
-        
-        Args:
-            date: 日期
-        
-        Returns:
-            分析结果
-        """
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        logger.info(f"执行分析 for {date}")
-        
-        result = self.analyzer.analyze(date)
-        
-        # 保存分析结果
-        self.storage.save_analysis(result, date)
-        
-        return result
-    
-    def generate_report(self, date: str = None, format: str = 'markdown') -> str:
-        """
-        生成报告
-        
-        Args:
-            date: 日期
-            format: 格式 (markdown/feishu)
-        
-        Returns:
-            报告文本
-        """
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        logger.info(f"生成报告 for {date}")
-        
-        # 分析
-        analysis = self.analyzer.analyze(date)
-        
-        # 生成报告
-        if format == 'feishu':
-            report = self.reporter.to_feishu(analysis)
-        else:
-            # 添加基差分析部分
-            report = self.reporter.generate(analysis)
-            # 插入基差分析
-            if analysis.get('basis'):
-                lines = report.split('\n')
-                # 在"1.2 成交量"后插入基差分析
-                for i, line in enumerate(lines):
-                    if line == '### 1.2 成交量':
-                        # 找到下一个空行
-                        j = i + 1
-                        while j < len(lines) and lines[j]:
-                            j += 1
-                        # 插入基差部分
-                        basis_lines = self.reporter.generate_basis_section(analysis['basis'])
-                        lines = lines[:j] + basis_lines + lines[j:]
-                        break
-                report = '\n'.join(lines)
-        
-        return report
-    
-    def run_full(self, date: str = None) -> dict:
-        """
-        完整流程：收集 -> 质量检查 -> 分析 -> 报告
-        
-        Args:
-            date: 日期
-        
-        Returns:
-            流程结果
-        """
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        logger.info(f"=== 开始完整流程 for {date} ===")
-        
-        # 1. 收集数据
-        logger.info("步骤1: 收集数据")
-        collect_result = self.collect_data(date)
-        
-        # 2. 质量检查
-        logger.info("步骤2: 质量检查")
-        quality_result = self.check_quality(date)
-        
-        if not quality_result['passed']:
-            logger.warning(f"数据质量未通过: {quality_result['score']}/100")
-            # 这里可以添加重试逻辑
-        
-        # 3. 分析
-        logger.info("步骤3: 数据分析")
-        analysis = self.analyzer.analyze(date)
-        
-        # 4. 生成报告
-        logger.info("步骤4: 生成报告")
-        report = self.generate_report(date, format='feishu')
-        
-        logger.info("=== 流程完成 ===")
-        
-        return {
-            'date': date,
-            'collect': collect_result,
-            'quality': quality_result,
-            'analysis': analysis,
-            'report': report
-        }
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
 
 def main():
-    """命令行入口"""
-    parser = argparse.ArgumentParser(description='A股市场每日分析系统')
-    parser.add_argument('command', choices=['collect', 'quality', 'analyze', 'report', 'run'],
-                       help='命令')
-    parser.add_argument('--date', '-d', help='日期 (YYYY-MM-DD)')
-    parser.add_argument('--format', '-f', choices=['markdown', 'feishu'], default='feishu',
-                       help='报告格式')
+    """主入口"""
+    # 优先从环境变量读取，其次从本地配置文件读取
+    local_config = load_local_config()
+    config = {
+        'tushare_token': os.getenv('TUSHARE_TOKEN', local_config.get('tushare_token', '')),
+        'data_dir': 'data'
+    }
     
-    args = parser.parse_args()
+    logger = logging.getLogger('main')
+    logger.info(f"Starting data collection at {datetime.now()}")
     
-    analyzer = AShareAnalyzer()
+    results = {}
     
-    if args.command == 'collect':
-        result = analyzer.collect_data(args.date)
-        print(f"数据收集完成: {result}")
+    # 创建数据库写入器
+    db_writer = DBWriter()
     
-    elif args.command == 'quality':
-        result = analyzer.check_quality(args.date)
-        print(result['report'])
+    # 1. A股行情 (TuShare)
+    if config.get('tushare_token'):
+        try:
+            collector = StockCollector(config)
+            result = collector.run()
+            if result:
+                results['stock'] = result
+                # 写入数据库
+                indices = result.get('indices', [])
+                if indices:
+                    count = db_writer.write_stock_indices(indices)
+                    logger.info(f"✓ Stock: {len(indices)} indices, {count} written to DB")
+                else:
+                    logger.info(f"✓ Stock: {len(indices)} indices")
+        except Exception as e:
+            logger.error(f"✗ Stock collection failed: {e}")
+        
+        # 2. 宏观经济
+        try:
+            collector = MacroCollector(config)
+            result = collector.run()
+            if result:
+                results['macro'] = result
+                logger.info(f"✓ Macro: {list(result.get('data', {}).keys())}")
+        except Exception as e:
+            logger.error(f"✗ Macro collection failed: {e}")
+        
+        # 3. 资金流
+        try:
+            collector = FundFlowCollector(config)
+            result = collector.run()
+            if result:
+                results['fund_flow'] = result
+                logger.info(f"✓ Fund flow: {list(result.get('data', {}).keys())}")
+        except Exception as e:
+            logger.error(f"✗ Fund flow collection failed: {e}")
+        
+        # 4. 基金
+        try:
+            collector = FundCollector(config)
+            result = collector.run()
+            if result:
+                results['fund'] = result
+                logger.info(f"✓ Fund: {list(result.get('data', {}).keys())}")
+        except Exception as e:
+            logger.error(f"✗ Fund collection failed: {e}")
+        
+        # 5. 可转债
+        try:
+            collector = BondCollector(config)
+            result = collector.run()
+            if result:
+                results['cb'] = result
+                logger.info(f"✓ Convertible bond: {len(result.get('data', []))} records")
+        except Exception as e:
+            logger.error(f"✗ Bond collection failed: {e}")
+        
+        # 6. 全球市场
+        try:
+            collector = GlobalMarketCollector(config)
+            result = collector.run()
+            if result:
+                results['global_market'] = result
+                logger.info(f"✓ Global market: {list(result.get('data', {}).keys())}")
+        except Exception as e:
+            logger.error(f"✗ Global market collection failed: {e}")
+        
+        # 7. 期货数据
+        try:
+            from futures_collector.collector import FuturesCollector
+            collector = FuturesCollector(config)
+            result = collector.fetch()
+            if result:
+                results['futures'] = result
+                logger.info(f"✓ Futures: {list(result.get('data', {}).keys())}")
+        except Exception as e:
+            logger.error(f"✗ Futures collection failed: {e}")
+        
+        # 8. 货币供应量 M0/M1/M2 (TuShare Pro)
+        try:
+            collector = MoneySupplyCollector(config)
+            result = collector.run()
+            if result:
+                results['money_supply'] = result
+                ms_list = result.get('data', {}).get('money_supply', [])
+                if ms_list:
+                    count = db_writer.write_money_supply(ms_list)
+                    logger.info(f"✓ Money supply: {len(ms_list)} records, {count} written to DB")
+                else:
+                    logger.info(f"✓ Money supply: {len(ms_list)} records")
+        except Exception as e:
+            logger.error(f"✗ Money supply collection failed: {e}")
+        
+        # 9. 社会融资规模 (TuShare Pro)
+        try:
+            collector = SocialFinancingProCollector(config)
+            result = collector.run()
+            if result:
+                results['social_financing'] = result
+                sf_list = result.get('data', {}).get('social_financing', [])
+                if sf_list:
+                    count = db_writer.write_social_financing(sf_list)
+                    logger.info(f"✓ Social financing: {len(sf_list)} records, {count} written to DB")
+                else:
+                    logger.info(f"✓ Social financing: {len(sf_list)} records")
+
+        except Exception as e:
+            logger.error(f"✗ Social financing collection failed: {e}")
+        
+        # 10. PMI采购经理人指数 (TuShare Pro)
+        try:
+            import tushare
+            pro = tushare.pro_api(config.get('tushare_token', ''))
+            df = pro.cn_pmi(start_m='202401', end_m='202503')
+            
+            if not df.empty:
+                pmi_data = {
+                    'date': datetime.now().strftime('%Y-%m-%d'),
+                    'type': 'pmi',
+                    'timestamp': datetime.now().isoformat(),
+                    'source': 'TuShare Pro',
+                    'data': df.to_dict('records')
+                }
+                results['pmi'] = pmi_data
+                # 写入数据库
+                pmi_list = df.to_dict('records')
+                if pmi_list:
+                    count = db_writer.write_pmi(pmi_list)
+                    logger.info(f"✓ PMI: {len(df)} records, {count} written to DB")
+                else:
+                    logger.info(f"✓ PMI: {len(df)} records")
+        except Exception as e:
+            logger.error(f"✗ PMI collection failed: {e}")
     
-    elif args.command == 'analyze':
-        result = analyzer.analyze(args.date)
-        print(result)
-    
-    elif args.command == 'report':
-        report = analyzer.generate_report(args.date, args.format)
-        print(report)
-    
-    elif args.command == 'run':
-        result = analyzer.run_full(args.date)
-        print(result['report'])
+    logger.info(f"Data collection completed. Results: {list(results.keys())}")
+    return results
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

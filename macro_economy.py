@@ -2,11 +2,20 @@
 """
 宏观经济数据模块
 包含：GDP、CPI、PPI、PMI、社会消费品、工业投资、进出口、房地产、央行数据等
+支持从 SQLite 数据库或 JSON 文件读取数据
 """
 
 from datetime import datetime
 from typing import Dict
 import json
+import os
+
+# 尝试导入数据库模块
+try:
+    from database.db_writer import DBReader
+    HAS_DB = True
+except ImportError:
+    HAS_DB = False
 
 
 class MacroEconomyData:
@@ -213,39 +222,8 @@ class MacroEconomyData:
             {'name': '存款准备金率(中型)', 'value': '10.50%', 'date': '2025-02', 'source': '央行'},
         ],
         
-        # ============ 货币供应 ============
-        'm2': {
-            'name': 'M2货币供应',
-            'value': 318.0,  # 万亿元
-            'yoy': 7.3,
-            'month': '2025-01',
-            'source': '央行',
-            'note': '广义货币M2同比'
-        },
-        'm1': {
-            'name': 'M1货币供应',
-            'value': 95.0,  # 万亿元
-            'yoy': 0.5,
-            'month': '2025-01',
-            'source': '央行'
-        },
-        'm0': {
-            'name': 'M0货币供应',
-            'value': 12.0,  # 万亿元
-            'yoy': 12.5,
-            'month': '2025-01',
-            'source': '央行'
-        },
-        
-        # ============ 新增社融 ============
-        'social_financing': {
-            'name': '社会融资规模',
-            'value': 6.5,  # 万亿元
-            'yoy': 9.0,
-            'month': '2025-01',
-            'source': '央行',
-            'note': '2025年1月新增社融'
-        }
+        # ============ 货币供应 (从JSON文件加载) ============
+        # 数据已移至 data/pboc_*.json 文件
     }
     
     def save_to_file(self, filepath: str = None) -> str:
@@ -268,18 +246,213 @@ class MacroEconomyData:
     def get_all(self) -> Dict:
         """获取所有宏观经济数据"""
         
+    def load_pboc_data(self, filepath: str = None) -> Dict:
+        """从JSON文件加载央行数据"""
+        import os
+        import glob
+        
+        if filepath is None:
+            # 自动查找最新的pboc_*.json文件
+            data_dir = os.path.join(os.path.dirname(__file__), 'data')
+            pattern = os.path.join(data_dir, 'pboc_*.json')
+            files = glob.glob(pattern)
+            if not files:
+                return {}
+            filepath = max(files)  # 最新文件
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def load_macro_data(self, filepath: str = None) -> Dict:
+        """从JSON文件加载TuShare宏观数据"""
+        import os
+        import glob
+        
+        if filepath is None:
+            # 自动查找最新的macro_*.json文件 (排除formatted)
+            data_dir = os.path.join(os.path.dirname(__file__), 'data')
+            pattern = os.path.join(data_dir, 'macro_2026-*.json')
+            files = [f for f in glob.glob(pattern) if 'formatted' not in f]
+            if not files:
+                return {}
+            filepath = max(files)  # 最新文件 (按日期)
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def load_real_estate_data(self, filepath: str = None) -> Dict:
+        """从JSON文件加载房地产数据"""
+        import os
+        import glob
+        
+        if filepath is None:
+            # 自动查找最新的real_estate_*.json文件
+            data_dir = os.path.join(os.path.dirname(__file__), 'data')
+            pattern = os.path.join(data_dir, 'real_estate_*.json')
+            files = glob.glob(pattern)
+            if not files:
+                return {}
+            filepath = max(files)  # 最新文件
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def load_money_supply_data(self, filepath: str = None) -> Dict:
+        """从JSON文件加载货币供应量数据 M0/M1/M2"""
+        import os
+        import glob
+        
+        if filepath is None:
+            # 自动查找最新的money_supply_*.json文件（排除history）
+            data_dir = os.path.join(os.path.dirname(__file__), 'data')
+            pattern = os.path.join(data_dir, 'money_supply_2026-*.json')
+            files = [f for f in glob.glob(pattern) if 'history' not in f]
+            if not files:
+                return {}
+            # 按修改时间排序，取最新
+            filepath = max(files, key=os.path.getmtime)
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    def _load_from_database(self) -> Dict:
+        """从数据库加载数据"""
+        if not HAS_DB:
+            return {}
+        
+        try:
+            db = DBReader()
+            
+            data = {}
+            
+            # 获取货币供应量
+            ms = db.get_latest_money_supply()
+            if ms:
+                # M2 是亿元，需要转换为万亿元
+                m2_val = ms.get('m2', 0) / 10000 if ms.get('m2') else 0
+                m1_val = ms.get('m1', 0) / 10000 if ms.get('m1') else 0
+                m0_val = ms.get('m0', 0) / 10000 if ms.get('m0') else 0
+                
+                data['m2'] = {
+                    'name': 'M2货币供应',
+                    'value': round(m2_val, 2),
+                    'yoy': ms.get('m2_yoy'),
+                    'month': ms.get('month', ''),
+                    'source': 'SQLite',
+                    'note': '广义货币M2 (万亿元)'
+                }
+                data['m1'] = {
+                    'name': 'M1货币供应',
+                    'value': round(m1_val, 2),
+                    'yoy': ms.get('m1_yoy'),
+                    'month': ms.get('month', ''),
+                    'source': 'SQLite',
+                    'note': '狭义货币M1 (万亿元)'
+                }
+                data['m0'] = {
+                    'name': 'M0货币供应',
+                    'value': round(m0_val, 2),
+                    'yoy': ms.get('m0_yoy'),
+                    'month': ms.get('month', ''),
+                    'source': 'SQLite',
+                    'note': '流通货币M0 (万亿元)'
+                }
+            
+            # 获取 PMI
+            pmi = db.get_latest_pmi()
+            if pmi:
+                data['pmi'] = {
+                    'name': '制造业PMI',
+                    'value': pmi.get('manufacturing_pmi'),
+                    'month': pmi.get('month', ''),
+                    'source': 'SQLite',
+                    'note': '采购经理指数'
+                }
+                data['pmi_services'] = {
+                    'name': '非制造业PMI',
+                    'value': pmi.get('non_manufacturing_pmi'),
+                    'month': pmi.get('month', ''),
+                    'source': 'SQLite',
+                    'note': '商务活动指数'
+                }
+            
+            # 获取 CPI
+            cpi = db.get_latest_cpi()
+            if cpi:
+                data['cpi'] = {
+                    'name': '中国CPI',
+                    'value': cpi.get('value'),
+                    'yoy': cpi.get('yoy'),
+                    'mom': cpi.get('mom'),
+                    'month': cpi.get('month', ''),
+                    'source': 'SQLite',
+                    'note': '消费者价格指数'
+                }
+            
+            # 获取 PPI
+            ppi = db.get_latest_ppi()
+            if ppi:
+                data['ppi'] = {
+                    'name': '中国PPI',
+                    'value': ppi.get('yoy'),  # 用同比作为主要值
+                    'yoy': ppi.get('yoy'),
+                    'mom': ppi.get('mom'),
+                    'month': ppi.get('month', ''),
+                    'source': 'SQLite',
+                    'note': '生产者价格指数'
+                }
+            
+            # 获取 GDP
+            gdp = db.get_latest_gdp()
+            if gdp:
+                data['gdp'] = {
+                    'name': '中国GDP',
+                    'value': gdp.get('value'),
+                    'yoy': gdp.get('yoy'),
+                    'quarter': gdp.get('quarter', ''),
+                    'source': 'SQLite',
+                    'note': '国内生产总值'
+                }
+            
+            return data
+            
+        except Exception as e:
+            print(f"Warning: Failed to load from database: {e}")
+            return {}
+    
+    def get_all(self) -> Dict:
+        """获取所有宏观经济数据（优先从数据库读取）"""
+        
+        # 优先从数据库读取
+        if HAS_DB:
+            db_data = self._load_from_database()
+            if db_data:
+                # 合并数据库数据和静态数据
+                all_data = dict(self.STATIC_DATA)
+                all_data.update(db_data)
+                return {
+                    'date': datetime.now().strftime("%Y-%m-%d"),
+                    'type': 'macro_economy',
+                    'timestamp': datetime.now().isoformat(),
+                    'data': all_data,
+                    'source': 'SQLite Database'
+                }
+        
+        # 数据库无数据时返回错误
         return {
             'date': datetime.now().strftime("%Y-%m-%d"),
             'type': 'macro_economy',
             'timestamp': datetime.now().isoformat(),
-            'data': self.STATIC_DATA,
-            'note': '静态数据，如需更新请运行本地收集器'
+            'data': {},
+            'error': '数据库无可用数据，请先运行数据采集'
         }
     
     def get_summary(self) -> str:
         """获取摘要文本"""
         
-        data = self.STATIC_DATA
+        # 使用get_all()获取合并后的数据
+        all_data = self.get_all()
+        data = all_data.get('data', {})
         lines = []
         
         lines.append("📊 宏观经济数据")
@@ -328,7 +501,7 @@ class MacroEconomyData:
             lines.append(f"  固定资产投资: {fi.get('yoy')}%, {fi.get('month')}")
         re = data.get('real_estate_investment')
         if re:
-            lines.append(f"  房地产投资: {re.get('yoy')}%, {re.get('month')}")
+            lines.append(f"  房地产投资: {re.get('yoy')}%, {re.get('month')} (全国{re.get('value')}亿元)")
         mi = data.get('manufacturing_investment')
         if mi:
             lines.append(f"  制造业投资: {mi.get('yoy')}%, {mi.get('month')}")
@@ -392,6 +565,14 @@ def main():
     elif len(sys.argv) > 1 and sys.argv[1] == '--json':
         result = data.get_all()
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif len(sys.argv) > 1 and sys.argv[1] == '--db':
+        # 测试数据库读取
+        if HAS_DB:
+            db_data = data._load_from_database()
+            print("从数据库读取的数据:")
+            print(json.dumps(db_data, ensure_ascii=False, indent=2))
+        else:
+            print("数据库模块未安装")
     else:
         print(data.get_summary())
 

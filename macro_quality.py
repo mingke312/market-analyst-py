@@ -58,6 +58,7 @@ class MacroDataQualityChecker:
         if not data or 'data' not in data:
             return {'issues': ['数据为空'], 'warnings': [], 'score': 0}
         
+        # Get the data dict - handle both formats
         fields = data.get('data', {})
         
         # 检查必需字段
@@ -183,14 +184,14 @@ class MacroDataQualityChecker:
         score = 100 - len(issues) * 10
         score = max(0, score)
         
-        return {'issues': issues, 'score': score}
+        return {'issues': issues, 'warnings': warnings, 'score': score}
     
     def check_all(self) -> Dict:
         """执行所有检查"""
         
         # 获取今天的数据
         today = datetime.now().strftime("%Y-%m-%d")
-        today_file = f"macro_{today}.json"
+        today_file = f"macro_formatted.json"
         today_path = os.path.join(self.data_dir, today_file)
         
         if not os.path.exists(today_path):

@@ -22,3 +22,8 @@ data/
 
 # Logs
 *.log
+
+# Local config (contains sensitive tokens)
+config/local_config.json
+config/
+

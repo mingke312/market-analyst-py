@@ -1,165 +1,185 @@
 #!/usr/bin/env python3
 """
-期货数据收集模块
-从东方财富获取股指期货数据
+期货数据采集器 - 使用 TuShare API
 """
-
-import re
+import os
+import sys
 import json
-from typing import Dict, Optional
-from datetime import datetime
-import urllib.request
-import urllib.error
+import logging
+from datetime import datetime, timedelta
 
+# 添加项目根目录
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
-# 期货代码映射
-FUTURES_CODES = {
-    'IF': {'name': '沪深300', 'exchange': '中金所'},
-    'IC': {'name': '中证500', 'exchange': '中金所'},
-    'IM': {'name': '中证1000', 'exchange': '中金所'},
-    'IH': {'name': '上证50', 'exchange': '中金所'},
-}
-
-CONTRACT_TYPES = ['当月', '下季', '隔季']
+import tushare as ts
+from collectors.base import get_tushare_token
 
 
 class FuturesCollector:
-    """期货数据收集器"""
+    """期货数据采集器 - 使用TuShare"""
     
-    # 东方财富期货数据API
-    BASE_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+    def __init__(self, config):
+        self.config = config
+        token = config.get('tushare_token', '')
+        if token:
+            self.pro = ts.pro_api(token)
+        else:
+            self.pro = None
+        
+        self.logger = logging.getLogger(__name__)
     
-    def __init__(self):
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+    def get_data_prefix(self):
+        return 'futures'
     
-    def _get_contract_code(self, futures_code: str, contract_type: str) -> str:
-        """获取合约代码"""
-        # 东方财富合约代码规则
-        # IF当月 = IF2206, IF下季 = IF2209, IF隔季 = IF2212
-        
-        # 获取当前年月
-        now = datetime.now()
-        year = now.year
-        month = now.month
-        
-        # 合约月份映射
-        month_map = {
-            '当月': month,
-            '下季': month + 1 if month < 12 else 1,
-            '隔季': month + 2 if month < 11 else (month + 2 - 12),
-        }
-        
-        target_month = month_map[contract_type]
-        target_year = year if target_month > month else year + 1
-        
-        # 简写年份（后两位）
-        year_short = target_year % 100
-        
-        return f"{futures_code}{year_short:02d}{target_month:02d}"
+    def transform(self, data):
+        return data
     
-    def fetch(self, futures_code: str, contract_type: str) -> Optional[Dict]:
-        """
-        获取单个期货合约数据
+    def fetch(self, start_date: str = None, end_date: str = None):
+        """获取期货数据
         
         Args:
-            futures_code: 期货代码 (IF/IC/IM/IH)
-            contract_type: 合约类型 (当月/下季/隔季)
-        
-        Returns:
-            合约数据
+            start_date: 起始日期 (格式：YYYYMMDD)
+            end_date: 结束日期 (格式：YYYYMMDD)
         """
-        contract_code = self._get_contract_code(futures_code, contract_type)
+        if not self.pro:
+            raise ValueError("TuShare token not configured")
         
-        # 东方财富行情API
-        url = f"https://push2.eastmoney.com/api/qt/stock/get?secid=90.{contract_code}&fields=f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f59,f60,f169,f170,f171"
+        data = {}
         
-        req = urllib.request.Request(url, headers=self.headers)
+        # 如果没有提供日期，使用默认
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=60)).strftime('%Y%m%d')
+        if not end_date:
+            end_date = datetime.now().strftime('%Y%m%d')
         
+        today = end_date
+        
+        # 1. 获取期货基本信息（股指期货）
         try:
-            with urllib.request.urlopen(req, timeout=15) as response:
-                content = response.read().decode('utf-8')
-                data = json.loads(content)
-                
-                if data.get('data') is None:
-                    return None
-                
-                stock_data = data['data']
-                return {
-                    'code': contract_code,
-                    'price': float(stock_data.get('f43', 0)) / 1000 if stock_data.get('f43') else 0,
-                    'open': float(stock_data.get('f44', 0)) / 1000 if stock_data.get('f44') else 0,
-                    'high': float(stock_data.get('f45', 0)) / 1000 if stock_data.get('f45') else 0,
-                    'low': float(stock_data.get('f46', 0)) / 1000 if stock_data.get('f46') else 0,
-                    'volume': stock_data.get('f47', 0),
-                    'amount': float(stock_data.get('f48', 0)) / 100000000 if stock_data.get('f48') else 0,
-                    'change': float(stock_data.get('f169', 0)) / 1000 if stock_data.get('f169') else 0,
-                    'change_percent': float(stock_data.get('f170', 0)) / 100 if stock_data.get('f170') else 0,
-                    'settlement': float(stock_data.get('f171', 0)) / 1000 if stock_data.get('f171') else 0,
-                }
-                
-        except (urllib.error.URLError, json.JSONDecodeError, KeyError) as e:
-            print(f"获取{futures_code}{contract_type}失败: {e}")
-            return None
-    
-    def collect_all(self) -> Dict:
-        """
-        收集所有期货数据
+            df = self.pro.fut_basic(exchange='CFFEX')
+            if df is not None and len(df) > 0:
+                # 筛选股指期货
+                index_fut = df[df['fut_code'].isin(['IF', 'IC', 'IH', 'IM'])]
+                # 筛选未到期合约
+                index_fut = index_fut[index_fut['delist_date'].fillna('20990101') >= today]
+                data['fut_basic'] = index_fut.to_dict('records')
+                self.logger.info(f"Futures basic: {len(data['fut_basic'])} records")
+        except Exception as e:
+            self.logger.warning(f"Futures basic fetch failed: {e}")
         
-        Returns:
-            完整数据字典
-        """
-        results = {}
-        
-        for code in FUTURES_CODES:
-            results[code] = {}
+        # 2. 获取期货日线数据（近30天）- 采集所有合约
+        try:
+            start_date = (datetime.now() - timedelta(days=60)).strftime('%Y%m%d')
+            df_daily = []
             
-            for contract_type in CONTRACT_TYPES:
-                if code == 'IH' and contract_type == '隔季':
-                    # IH没有隔季合约
-                    continue
-                
+            # 股指期货合约列表
+            # 当月(2603)，下月(2604)，下季(2606)，隔季(2609)
+            contracts = [
+                # 当月合约 (2603)
+                'IF2603.CFX', 'IC2603.CFX', 'IH2603.CFX', 'IM2603.CFX',
+                # 下月合约 (2604)
+                'IF2604.CFX', 'IC2604.CFX', 'IH2604.CFX', 'IM2604.CFX',
+                # 下季合约 (2606)
+                'IF2606.CFX', 'IC2606.CFX', 'IH2606.CFX', 'IM2606.CFX',
+                # 隔季合约 (2609)
+                'IF2609.CFX', 'IC2609.CFX', 'IH2609.CFX', 'IM2609.CFX',
+            ]
+            
+            for code in contracts:
                 try:
-                    data = self.fetch(code, contract_type)
-                    if data:
-                        results[code][contract_type] = data
-                    else:
-                        results[code][contract_type] = None
+                    df = self.pro.fut_daily(ts_code=code, start_date=start_date, end_date=today)
+                    if df is not None and len(df) > 0:
+                        df_daily.append(df)
+                        self.logger.info(f"  {code}: {len(df)} records")
                 except Exception as e:
-                    print(f"获取{code}{contract_type}失败: {e}")
-                    results[code][contract_type] = None
+                    self.logger.warning(f"Futures daily {code} fetch failed: {e}")
+            
+            if df_daily:
+                import pandas as pd
+                df_all = pd.concat(df_daily, ignore_index=True)
+                data['fut_daily'] = df_all.to_dict('records')
+                self.logger.info(f"Futures daily: {len(data['fut_daily'])} records")
+        except Exception as e:
+            self.logger.warning(f"Futures daily fetch failed: {e}")
         
         return {
-            'date': datetime.now().strftime("%Y-%m-%d"),
-            'type': 'futures',
-            'data': results,
-            'timestamp': datetime.now().isoformat()
+            'date': today,
+            'data': data
         }
+    
+    def run(self, data_dir='data', start_date: str = None, end_date: str = None):
+        """运行采集器并保存数据
+        
+        Args:
+            data_dir: 数据保存目录
+            start_date: 起始日期 (格式：YYYYMMDD)
+            end_date: 结束日期 (格式：YYYYMMDD)
+        """
+        import sqlite3
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        result = self.fetch(start_date=start_date, end_date=end_date)
+        
+        if result:
+            # 1. 保存到JSON文件
+            output_file = os.path.join(data_dir, f'futures_{today}.json')
+            os.makedirs(data_dir, exist_ok=True)
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            
+            self.logger.info(f"Data saved to {output_file}")
+            
+            # 2. 保存到数据库
+            db_path = os.path.join(data_dir, 'market_data.db')
+            if os.path.exists(db_path):
+                try:
+                    conn = sqlite3.connect(db_path)
+                    cursor = conn.cursor()
+                    
+                    # 写入期货日线数据
+                    fut_daily = result.get('data', {}).get('fut_daily', [])
+                    for item in fut_daily:
+                        try:
+                            cursor.execute('''
+                                INSERT OR REPLACE INTO futures_daily 
+                                (ts_code, trade_date, open, high, low, close, vol, amount, oi)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (
+                                item.get('ts_code'),
+                                item.get('trade_date'),
+                                item.get('open'),
+                                item.get('high'),
+                                item.get('low'),
+                                item.get('close'),
+                                item.get('vol'),
+                                item.get('amount'),
+                                item.get('oi')
+                            ))
+                        except Exception as e:
+                            self.logger.debug(f"Insert error: {e}")
+                    
+                    conn.commit()
+                    conn.close()
+                    self.logger.info(f"✓ Futures data written to DB: {len(fut_daily)} records")
+                except Exception as e:
+                    self.logger.warning(f"Failed to write futures data to DB: {e}")
+        
+        return result
 
 
 def main():
-    """命令行入口"""
-    import sys
+    """测试采集器"""
+    logging.basicConfig(level=logging.INFO)
     
-    collector = FuturesCollector()
-    result = collector.collect_all()
+    config = {'tushare_token': get_tushare_token()}
+    collector = FuturesCollector(config)
     
-    if len(sys.argv) > 1 and sys.argv[1] == '--json':
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-    else:
-        print("📈 期货数据")
-        print("-" * 50)
-        
-        for code, contracts in result['data'].items():
-            print(f"\n{FUTURES_CODES[code]['name']} ({code}):")
-            for ct, data in contracts.items():
-                if data:
-                    change = f"{data['change_percent']:+.2f}%"
-                    print(f"  {ct:4s}: {data['price']:>8.2f}  {change}")
-                else:
-                    print(f"  {ct:4s}: --")
+    result = collector.fetch()
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
