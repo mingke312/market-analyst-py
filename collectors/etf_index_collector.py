@@ -69,29 +69,22 @@ class EtfIndexCollector(BaseCollector):
         if not self.pro:
             raise ValueError("TuShare token not configured")
         
-        if not end_date:
-            end_date = self.get_latest_trade_date()
-        if not start_date:
-            start_date = end_date
-        
         # 获取数据库最新日期
         conn = self.db_writer.get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT MAX(trade_date) FROM etf_share_size")
-        last_date = cursor.fetchone()[0]
+        db_last_date = cursor.fetchone()[0]
         conn.close()
         
-        self.logger.info(f"ETF规模数据: 上次最新日期 {last_date}, 目标日期 {end_date}")
+        # 计算采集日期范围：获取最近30天的数据
+        today = datetime.now()
+        start_date = (today - timedelta(days=30)).strftime('%Y%m%d')
+        end_date = today.strftime('%Y%m%d')
         
-        # 如果已是最新，无需采集
-        if last_date and end_date <= last_date:
-            self.logger.info("ETF规模数据已是最新")
-            return []
-        
-        # 更新日期范围
-        start_date = last_date if last_date else start_date
+        self.logger.info(f"ETF规模数据: 数据库最新 {db_last_date}, 采集范围 {start_date} ~ {end_date}")
         
         all_data = []
+        actual_latest_date = db_last_date
         
         # 分别获取上海和深圳交易所的ETF
         for exchange in ['SSE', 'SZSE']:
@@ -102,6 +95,13 @@ class EtfIndexCollector(BaseCollector):
                     end_date=end_date
                 )
                 if df is not None and len(df) > 0:
+                    # 更新实际最新日期
+                    actual_dates = df['trade_date'].unique()
+                    if len(actual_dates) > 0:
+                        actual_latest = max(actual_dates)
+                        if not actual_latest_date or actual_latest > actual_latest_date:
+                            actual_latest_date = actual_latest
+                    
                     # 转换列名
                     df = df.rename(columns={
                         'ts_code': 'ts_code',
@@ -117,6 +117,11 @@ class EtfIndexCollector(BaseCollector):
                     self.logger.info(f"  {exchange}: 获取 {len(df)} 条")
             except Exception as e:
                 self.logger.warning(f"获取 {exchange} ETF失败: {e}")
+        
+        # 检查是否需要更新：如果实际最新日期大于数据库最新日期
+        if db_last_date and actual_latest_date and actual_latest_date <= db_last_date:
+            self.logger.info(f"ETF规模数据已是最新 ({db_last_date})")
+            return []
         
         if all_data:
             import pandas as pd
